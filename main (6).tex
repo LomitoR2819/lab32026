@@ -1,0 +1,368 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[spanish]{babel}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+
+% Configuración de listings para código MIPS
+\lstdefinestyle{mipsstyle}{
+    language={[MIPS]Assembler},
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{green!60!black},
+    stringstyle=\color{red},
+    numbers=left,
+    numberstyle=\tiny,
+    numbersep=5pt,
+    frame=single,
+    breaklines=true,
+    showstringspaces=false,
+    tabsize=4
+}
+
+\title{\textbf{Informe Técnico: Memory-Mapped I/O en MIPS32} \\
+\large Análisis de Entrada/Salida Mapeada en Memoria}
+\author{Arquitectura de Computadores}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Organización de la Memoria en Memory-Mapped I/O}
+
+\subsection{Estructura de la Memoria}
+En un sistema con memory-mapped I/O, el espacio de direcciones de memoria se divide en dos regiones principales:
+
+\begin{itemize}
+    \item \textbf{Región para RAM/RAM:} Espacio de direcciones asignado a la memoria principal (DRAM/SRAM)
+    \item \textbf{Región para dispositivos I/O:} Espacio de direcciones reservado para los registros de los periféricos
+\end{itemize}
+
+\subsection{Región Típica de Mapeo}
+En arquitecturas MIPS32 típicas, los dispositivos se mapean comúnmente en:
+\begin{itemize}
+    \item \texttt{0xFFFF0000 - 0xFFFFFFFF} (últimos 64KB del espacio de direcciones)
+    \item Región \texttt{kseg1} en MIPS (direcciones no cacheables)
+    \item Direcciones altas para evitar conflictos con la RAM convencional
+\end{itemize}
+
+\subsection{Implicaciones para lw y sw}
+Las instrucciones \texttt{lw} (load word) y \texttt{sw} (store word) se utilizan tanto para acceder a memoria RAM como a registros de dispositivos:
+
+\begin{lstlisting}[style=mipsstyle]
+# Acceso a RAM
+lw $t0, 0x1000($zero)     # Carga desde dirección de RAM
+
+# Acceso a dispositivo I/O  
+lw $t1, 0xFFFF0004($zero) # Carga desde registro de estado del sensor
+sw $t2, 0xFFFF0000($zero) # Almacena en registro de control del sensor
+\end{lstlisting}
+
+El procesador no distingue entre ambos tipos de acceso; es el hardware externo quien interpreta la dirección y direcciona el acceso al dispositivo correspondiente.
+
+\section{Memory-Mapped I/O vs. I/O por Puertos}
+
+\subsection{Diferencias Principales}
+\begin{table}[h]
+\centering
+\begin{tabular}{|p{5cm}|p{5cm}|}
+\hline
+\textbf{Memory-Mapped I/O} & \textbf{I/O por Puertos} \\
+\hline
+Mismo espacio de direcciones para memoria y E/S & Espacio de direcciones separado para E/S \\
+\hline
+Mismas instrucciones (lw/sw) para E/S y memoria & Instrucciones especiales (in/out) para E/S \\
+\hline
+Cualquier instrucción que acceda a memoria puede acceder a E/S & Sólo instrucciones específicas pueden acceder a E/S \\
+\hline
+\end{tabular}
+\caption{Comparación de enfoques de E/S}
+\end{table}
+
+\subsection{Ventajas y Desventajas}
+
+\textbf{Memory-Mapped I/O:}
+\begin{itemize}
+    \item \textbf{Ventajas:}
+    \begin{itemize}
+        \item No requiere instrucciones especiales
+        \item Simplifica el diseño del procesador
+        \item Mayor flexibilidad en el acceso a dispositivos
+        \item Permite usar todas las instrucciones de memoria con dispositivos
+    \end{itemize}
+    \item \textbf{Desventajas:}
+    \begin{itemize}
+        \item Consume espacio de direcciones
+        \item Puede requerir lógica adicional para decodificar direcciones
+        \item Potenciales conflictos de caché
+    \end{itemize}
+\end{itemize}
+
+\textbf{I/O por Puertos:}
+\begin{itemize}
+    \item \textbf{Ventajas:}
+    \begin{itemize}
+        \item Espacio de direcciones separado (no reduce memoria disponible)
+        \item Instrucciones específicas permiten mejor control
+        \item Más fácil implementar protección
+    \end{itemize}
+    \item \textbf{Desventajas:}
+    \begin{itemize}
+        \item Requiere instrucciones adicionales
+        \item Complejidad añadida en el conjunto de instrucciones
+        \item Menos flexibilidad en modos de acceso
+    \end{itemize}
+\end{itemize}
+
+\subsection{¿Por qué MIPS32 usa Memory-Mapped I/O?}
+MIPS32 utiliza principalmente memory-mapped I/O por varias razones:
+\begin{enumerate}
+    \item \textbf{Simplicidad RISC}: Mantiene el conjunto de instrucciones reducido
+    \item \textbf{Eficiencia}: Aprovecha la jerarquía de memoria existente
+    \item \textbf{Flexibilidad}: Permite usar modos de direccionamiento complejos
+    \item \textbf{Estandarización}: Enfoque común en sistemas embebidos
+\end{enumerate}
+
+\section{Conflictos de Direcciones Solapadas}
+
+\subsection{Problemas Potenciales}
+Si dos dispositivos usan direcciones solapadas, pueden ocurrir:
+\begin{itemize}
+    \item Lecturas/escrituras dirigidas al dispositivo incorrecto
+    \item Contención en el bus de datos
+    \item Comportamiento indeterminado del sistema
+    \item Posibles daños en el hardware
+\end{itemize}
+
+\subsection{Solución: Decodificación de Direcciones}
+Para evitar conflictos, se implementa un decodificador de direcciones que:
+\begin{enumerate}
+    \item Asigna rangos exclusivos a cada dispositivo
+    \item Utiliza señales de chip select (CS)
+    \item Implementa jerarquía de decodificación
+\end{enumerate}
+
+\begin{lstlisting}[style=mipsstyle]
+# Ejemplo de asignación exclusiva
+.eqv SENSOR1_BASE 0xFFFF0000  # Rango: 0xFFFF0000-0xFFFF000F
+.eqv SENSOR2_BASE 0xFFFF0010  # Rango: 0xFFFF0010-0xFFFF001F
+.eqv SENSOR3_BASE 0xFFFF0020  # Rango: 0xFFFF0020-0xFFFF002F
+\end{lstlisting}
+
+\section{Simplificación del Conjunto de Instrucciones}
+
+\subsection{Ventajas del Enfoque Unificado}
+El memory-mapped I/O simplifica el diseño porque:
+\begin{itemize}
+    \item Reutiliza el mismo hardware de memoria
+    \item No requiere nuevas instrucciones
+    \item Mantiene la ortogonalidad del ISA
+    \item Reduce la complejidad del decodificador de instrucciones
+\end{itemize}
+
+\subsection{Instrucciones Necesarias en I/O por Puertos}
+Si se usara E/S por puertos, serían necesarias instrucciones adicionales como:
+\begin{itemize}
+    \item \texttt{in r1, port} - Leer del puerto
+    \item \texttt{out port, r1} - Escribir al puerto
+    \item \texttt{ins} - Entrada de cadena
+    \item \texttt{outs} - Salida de cadena
+\end{itemize}
+
+\section{Operación a Nivel de Bus}
+
+\subsection{Acceso a Dispositivos}
+Cuando el procesador accede a una dirección de dispositivo:
+
+\begin{enumerate}
+    \item El procesador coloca la dirección en el bus de direcciones
+    \item El decodificador de direcciones analiza la dirección
+    \item Si la dirección corresponde a un dispositivo, activa la señal CS correspondiente
+    \item El dispositivo responde en el bus de datos (lectura) o captura los datos (escritura)
+    \item La memoria RAM permanece inactiva durante este acceso
+\end{enumerate}
+
+\subsection{Mecanismo de Selección}
+\begin{verbatim}
+Dirección: 0xFFFF0004
+          ↓
+Decodificador
+    ↓           ↓
+  RAM?        I/O?
+  (No)        (Sí)
+              ↓
+        Activar CS_LUZ_ESTADO
+              ↓
+        Sensor responde en bus
+\end{verbatim}
+
+\section{Protección y Acceso de Programas sin Privilegios}
+
+\subsection{Acceso no Autorizado}
+Sí es posible que programas sin privilegios accedan a dispositivos si:
+\begin{itemize}
+    \item Las direcciones están en espacio de usuario
+    \item No hay mecanismos de protección
+    \item El sistema operativo no restringe el acceso
+\end{itemize}
+
+\subsection{Mecanismos de Protección}
+Para evitar accesos no autorizados:
+
+\begin{enumerate}
+    \item \textbf{MMU (Memory Management Unit)}: Define permisos por página
+    \item \textbf{Niveles de privilegio}: Solo modo kernel puede acceder a ciertas regiones
+    \item \textbf{Sistema operativo}: Provee llamadas al sistema para acceso controlado
+    \item \textbf{Trap handling}: Instrucciones ilegales generan excepciones
+\end{enumerate}
+
+En MIPS32 típicamente:
+\begin{itemize}
+    \item Dispositivos en \texttt{kseg1} (solo accesible en modo kernel)
+    \item Excepción si usuario intenta acceder
+    \item Drivers que operan en modo privilegiado
+\end{itemize}
+
+\section{Técnicas para Evitar Esperas Activas}
+
+\subsection{Problema de la Espera Activa}
+El código presentado en la práctica usa espera activa:
+\begin{lstlisting}[style=mipsstyle]
+EsperarListoLuz:
+    lw $t0, LUZ_ESTADO
+    beqz $t0, EsperarListoLuz  # Espera activa
+\end{lstlisting}
+
+\subsection{Técnicas Alternativas}
+
+\textbf{1. Interrupciones:}
+\begin{itemize}
+    \item Dispositivo genera interrupción cuando está listo
+    \item Procesador puede ejecutar otras tareas mientras espera
+    \item Más eficiente para sistemas multitarea
+\end{itemize}
+
+\textbf{2. DMA (Direct Memory Access):}
+\begin{itemize}
+    \item Transferencia directa dispositivo-memoria
+    \item Libera al procesador durante la transferencia
+    \item Ideal para grandes volúmenes de datos
+\end{itemize}
+
+\textbf{3. Timeouts y Retries:}
+\begin{itemize}
+    \item Evitar bloqueos indefinidos
+    \item Manejo robusto de errores
+    \item Implementado en el sensor de presión
+\end{itemize}
+
+\begin{lstlisting}[style=mipsstyle]
+EsperarConTimeout:
+    li $t2, 1000000     # Contador de timeout
+EsperarLoop:
+    lw $t0, LUZ_ESTADO
+    bnez $t0, Listo
+    subi $t2, $t2, 1
+    bnez $t2, EsperarLoop
+    j TimeoutError      # Timeout alcanzado
+\end{lstlisting}
+
+\textbf{4. Planificación Cooperativa:}
+\begin{itemize}
+    \item Ceder el procesador mientras espera
+    \item Usar llamadas al sistema como \texttt{yield()}
+    \item Permite multiprogramación
+\end{itemize}
+
+\section{Análisis y Discusión de Resultados}
+
+\subsection{Implementación de los Sensores}
+
+\subsubsection{Sensor de Luminosidad}
+La implementación sigue fielmente el modelo propuesto:
+\begin{itemize}
+    \item Inicialización explícita escribiendo 0x1 en \texttt{LuzControl}
+    \item Verificación de estado antes de lectura
+    \item Manejo de tres estados posibles (0, 1, -1)
+    \item Retorno de código de estado junto con el valor
+\end{itemize}
+
+\subsubsection{Sensor de Presión}
+Se implementó robustez adicional:
+\begin{itemize}
+    \item Detección de errores transitorios (-1)
+    \item Reinicialización automática
+    \item Reintento único como especificado
+    \item Preservación de estado entre intentos
+\end{itemize}
+
+\subsubsection{Sensor de Tensión Arterial}
+Caso más simple pero funcional:
+\begin{itemize}
+    \item Inicio de medición con comando 1
+    \item Espera activa hasta completar
+    \item Retorno de dos valores simultáneamente
+\end{itemize}
+
+\subsection{Eficiencia del Código}
+\textbf{Ventajas:}
+\begin{itemize}
+    \item Código modular y reutilizable
+    \item Manejo adecuado de errores
+    \item Preservación de registros según convención
+    \item Implementación clara y documentada
+\end{itemize}
+
+\textbf{Limitaciones:}
+\begin{itemize}
+    \item Uso de espera activa (busy-waiting)
+    \item No hay manejo de timeouts
+    \item Sin soporte para interrupciones
+    \item Simulación simplificada
+\end{itemize}
+
+\subsection{Mejoras Propuestas}
+Para una implementación más robusta:
+
+\begin{enumerate}
+    \item \textbf{Interrupciones:}
+    \begin{lstlisting}[style=mipsstyle]
+ConfigurarIntLuz:
+    li $t0, 0x3        # Habilitar interrupción
+    sw $t0, LUZ_CONTROL
+    # ISR manejaría la lectura
+    \end{lstlisting}
+    
+    \item \textbf{Buffering:}
+    \begin{itemize}
+        \item Almacenar múltiples lecturas
+        \item Reducir frecuencia de acceso al hardware
+    \end{itemize}
+    
+    \item \textbf{Timeouts configurables:}
+    \begin{itemize}
+        \item Evitar bloqueos permanentes
+        \item Detectar hardware no responsive
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Conclusión}
+El sistema implementado demuestra los principios fundamentales del memory-mapped I/O en MIPS32:
+\begin{itemize}
+    \item Acceso uniforme a memoria y dispositivos
+    \item Mecanismos de sincronización mediante sondeo (polling)
+    \item Manejo de errores y reintentos
+    \item Importancia de la decodificación de direcciones
+\end{itemize}
+
+La principal limitación es la espera activa, que podría mejorarse con interrupciones en sistemas más sofisticados. Sin embargo, para sistemas embebidos simples o con tiempo real estricto, el enfoque de sondeo puede ser apropiado.
+
+\end{document}
